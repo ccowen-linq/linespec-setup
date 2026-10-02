@@ -20,6 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/ccowen-linq/linespec-setup/main/set
 | LineSpec binary | existing install → Homebrew → checksum-verified GitHub release (`~/.local/bin`) → `go install` |
 | Ollama + `nomic-embed-text` | installs Ollama, starts `ollama serve` if there is no systemd (common on WSL), pulls the model, verifies `/v1/embeddings` |
 | Repo setup | in the current git repo (or `--repo PATH`): `linespec provenance install-skills`, `install-plugin`, `install-hooks` |
+| Claude Code subagents | copies `agents/*.md` (navigator, record-author, spec-author, generator-author, code-author, tuner) into `~/.claude/agents`, and adds `agents/ROUTING.md` to `~/.claude/CLAUDE.md` inside a marked block that is replaced on re-run. A locally edited agent is backed up to `<name>.md.bak` before it is updated |
 | Docker check | warns, with WSL-specific guidance, if Docker isn't reachable |
 
 Re-running is safe; satisfied steps are skipped and a summary is printed. Exit code is non-zero if a step failed.
@@ -30,11 +31,12 @@ Re-running is safe; satisfied steps are skipped and a summary is printed. Exit c
 --repo PATH      repo to set up (default: current dir if a git repo)
 --version X.Y.Z  pin a LineSpec version (default: latest)
 --skip-ollama    skip Ollama and the embedding model
+--skip-agents    skip the Claude Code subagents
 --yes            allow sudo steps (Ollama installer, apt packages)
 --dry-run        show the plan, change nothing
 ```
 
-Env overrides: `LINESPEC_REPO`, `EMBED_MODEL`, `OLLAMA_HOST_URL`, `INSTALL_DIR`.
+Env overrides: `CLAUDE_DIR`, `SETUP_RAW_BASE`, `LINESPEC_REPO`, `EMBED_MODEL`, `OLLAMA_HOST_URL`, `INSTALL_DIR`.
 
 Without `--yes` the script never runs sudo; it prints the command for you to run.
 

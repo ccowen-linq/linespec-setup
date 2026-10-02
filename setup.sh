@@ -6,7 +6,8 @@
 #
 # Installs: linespec binary, Ollama + an embedding model (for `provenance search`
 # without a Voyage key), and — inside a git repo — the Claude Code skills,
-# provenance plugin and git hooks. Safe to re-run; satisfied steps are skipped.
+# provenance plugin and git hooks; and the team's provenance subagents into
+# ~/.claude/agents. Safe to re-run; satisfied steps are skipped.
 
 set -euo pipefail
 
@@ -15,10 +16,14 @@ LINESPEC_VERSION="${LINESPEC_VERSION:-latest}"
 EMBED_MODEL="${EMBED_MODEL:-nomic-embed-text}"
 OLLAMA_HOST_URL="${OLLAMA_HOST_URL:-http://localhost:11434}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+SETUP_RAW_BASE="${SETUP_RAW_BASE:-https://raw.githubusercontent.com/ccowen-linq/linespec-setup/main}"
+CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+AGENTS=(navigator record-author spec-author generator-author code-author tuner)
 
 DRY_RUN=0
 YES=0
 SKIP_OLLAMA=0
+SKIP_AGENTS=0
 REPO_DIR=""
 FAILED=()
 SUMMARY=()
@@ -29,6 +34,7 @@ Usage: setup.sh [options]
   --repo PATH      Git repo to set up (skills, plugin, hooks). Default: current dir if it is a git repo.
   --version X.Y.Z  LineSpec version to install (default: latest release)
   --skip-ollama    Don't install Ollama / the embedding model
+  --skip-agents    Don't install the Claude Code subagents into ~/.claude/agents
   --yes            Allow steps that need sudo (Ollama installer, apt packages)
   --dry-run        Print what would happen, change nothing
   -h, --help       Show this help
@@ -217,6 +223,68 @@ setup_repo() {
   done
 }
 
+# ---------- Claude Code subagents ----------
+
+# Fetch a file shipped with this script: from the local checkout when run as
+# ./setup.sh, otherwise from GitHub (the curl | bash case has no local files).
+fetch_asset() {
+  local rel="$1" dest="$2" here
+  here="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || true)"
+  if [ -n "$here" ] && [ -f "$here/$rel" ]; then cp "$here/$rel" "$dest"
+  else curl -fsSL -o "$dest" "$SETUP_RAW_BASE/$rel"; fi
+}
+
+install_agents() {
+  if [ "$SKIP_AGENTS" = 1 ]; then skip "subagents (--skip-agents)"; return; fi
+  log "Claude Code subagents → $CLAUDE_DIR/agents"
+  local tmp name dest installed=0 same=0
+  tmp="$(mktemp -d)"
+  run mkdir -p "$CLAUDE_DIR/agents"
+  for name in "${AGENTS[@]}"; do
+    dest="$CLAUDE_DIR/agents/$name.md"
+    if ! fetch_asset "agents/$name.md" "$tmp/$name.md"; then
+      fail "subagent $name (download)"; continue
+    fi
+    if [ -f "$dest" ] && cmp -s "$tmp/$name.md" "$dest"; then same=$((same+1)); continue; fi
+    # Keep a local edit recoverable rather than silently clobbering it.
+    if [ -f "$dest" ]; then run cp "$dest" "$dest.bak"; warn "updated $name.md (previous copy saved as $name.md.bak)"; fi
+    run cp "$tmp/$name.md" "$dest"
+    installed=$((installed+1))
+  done
+  rm -rf "$tmp"
+  if [ "$installed" -gt 0 ]; then ok "subagents ($installed installed/updated, $same unchanged)"
+  else skip "subagents (all ${#AGENTS[@]} up to date)"; fi
+  install_agent_routing
+}
+
+# Routing guidance tells Claude when to dispatch the subagents. It lives in a
+# marked block in ~/.claude/CLAUDE.md, replaced in place on re-run.
+install_agent_routing() {
+  local md="$CLAUDE_DIR/CLAUDE.md" begin="<!-- linespec-setup:agents BEGIN -->" end="<!-- linespec-setup:agents END -->" tmp
+  tmp="$(mktemp)"
+  if ! fetch_asset "agents/ROUTING.md" "$tmp"; then rm -f "$tmp"; fail "subagent routing (download)"; return; fi
+  local block; block="$(printf '%s\n%s\n%s\n' "$begin" "$(cat "$tmp")" "$end")"
+  rm -f "$tmp"
+  if [ -f "$md" ] && grep -qF "$begin" "$md"; then
+    local current; current="$(sed -n "/$begin/,/$end/p" "$md")"
+    if [ "$current" = "$block" ]; then
+      skip "subagent routing in CLAUDE.md (up to date)"; return
+    fi
+    if [ "$DRY_RUN" = 1 ]; then echo "  [dry-run] replace routing block in $md"; return; fi
+    # Block goes through ENVIRON, not -v, so backslashes in it survive.
+    BLOCK="$block" awk -v b="$begin" -v e="$end" '
+      $0==b {print ENVIRON["BLOCK"]; skipping=1; next}
+      $0==e && skipping {skipping=0; next}
+      !skipping {print}' "$md" >"$md.tmp" && mv "$md.tmp" "$md"
+    ok "subagent routing in CLAUDE.md (updated)"
+  else
+    if [ "$DRY_RUN" = 1 ]; then echo "  [dry-run] append routing block to $md"; return; fi
+    mkdir -p "$CLAUDE_DIR"
+    { [ -s "$md" ] && printf '\n'; printf '%s\n' "$block"; } >>"$md"
+    ok "subagent routing in CLAUDE.md (added)"
+  fi
+}
+
 # ---------- docker (informational) ----------
 
 check_docker() {
@@ -253,6 +321,7 @@ main() {
       --repo)        REPO_DIR="${2:?--repo needs a path}"; shift 2 ;;
       --version)     LINESPEC_VERSION="${2#v}"; shift 2 ;;
       --skip-ollama) SKIP_OLLAMA=1; shift ;;
+      --skip-agents) SKIP_AGENTS=1; shift ;;
       --yes|-y)      YES=1; shift ;;
       --dry-run)     DRY_RUN=1; shift ;;
       -h|--help)     usage; exit 0 ;;
@@ -267,6 +336,7 @@ main() {
   install_linespec
   install_ollama
   setup_repo
+  install_agents
   check_docker
 
   echo; log "Summary"
